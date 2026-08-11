@@ -1,0 +1,93 @@
+name: Build VLC Dolby Vision Windows x64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "patches/**"
+      - ".github/workflows/build-windows.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-win64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout build repository
+        uses: actions/checkout@v4
+        with:
+          path: dv
+
+      - name: Checkout tested VLC baseline
+        uses: actions/checkout@v4
+        with:
+          repository: darkironman-collab/VLC-DolbyVision
+          ref: 196166cee8ce3bf0e98a3cd870402949e8962bcb
+          fetch-depth: 1
+          path: vlc
+
+      - name: Apply and verify Dolby Vision integration
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$GITHUB_WORKSPACE/vlc"
+          PATCH="$GITHUB_WORKSPACE/dv/patches/0001-windows-add-dolby-vision-playback-controls.patch"
+          git apply --check "$PATCH"
+          git apply "$PATCH"
+          python3 dolbyvision/verify_dovi_sources.py
+          git diff --check
+          git status --short
+
+      - name: Build VLC Windows x64 in official VideoLAN CI image
+        shell: bash
+        run: |
+          set -euxo pipefail
+          chmod -R a+rwX "$GITHUB_WORKSPACE/vlc"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/vlc:/vlc" \
+            -w /vlc \
+            registry.videolan.org/vlc-debian-win64-posix:20260611225331 \
+            bash -lc '
+              set -euxo pipefail
+              test -n "$HOME"
+              test -d "$HOME"
+              git config --global --add safe.directory /vlc
+              export CI_JOB_NAME=win64
+              export TRIPLET=x86_64-w64-mingw32
+              export VLC_CONTRIB_SHA="$(extras/ci/get-contrib-sha.sh win64)"
+              export VLC_PREBUILT_CONTRIBS_URL="https://artifacts.videolan.org/vlc/win64/vlc-contrib-${TRIPLET}-${VLC_CONTRIB_SHA}.tar.zst"
+              if ! extras/ci/check-url.sh "$VLC_PREBUILT_CONTRIBS_URL"; then
+                unset VLC_PREBUILT_CONTRIBS_URL
+              fi
+              extras/package/win32/build.sh -a x86_64 -p -i n
+            '
+
+      - name: Collect Windows packages
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          find "$GITHUB_WORKSPACE/vlc/win64" -maxdepth 1 -type f \
+            \( -name "*.exe" -o -name "*.msi" -o -name "*.7z" -o -name "*.zip" \) \
+            -print -exec cp -v {} "$GITHUB_WORKSPACE/artifacts/" \; || true
+          if [ -d "$GITHUB_WORKSPACE/vlc/win64/vlc-win64" ]; then
+            tar -C "$GITHUB_WORKSPACE/vlc/win64" -czf \
+              "$GITHUB_WORKSPACE/artifacts/vlc-dolbyvision-win64-tree.tar.gz" \
+              vlc-win64
+          fi
+          ls -lah "$GITHUB_WORKSPACE/artifacts" || true
+
+      - name: Upload Windows x64 artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VLC-DolbyVision-Windows-x64
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14
