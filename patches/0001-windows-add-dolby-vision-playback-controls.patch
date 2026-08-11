@@ -1,32 +1,5 @@
-From 097c43e7ae2abb773febc99b4bc234d35e16c95c Mon Sep 17 00:00:00 2001
-From: Codex <codex@openai.com>
-Date: Tue, 11 Aug 2026 16:38:56 +0100
-Subject: [PATCH] windows: add Dolby Vision playback controls
-
----
- .github/workflows/windows-dolbyvision.yml     |  19 +-
- dolbyvision/README.md                         |  38 +-
- dolbyvision/verify_dovi_sources.py            |  64 ++++
- include/meson.build                           |   1 +
- include/vlc_dovi.h                            | 116 ++++++
- include/vlc_es.h                              |   1 +
- modules/codec/avcodec/video.c                 |  65 +++-
- modules/codec/mft.cpp                         | 334 +++++++++++++++---
- modules/demux/avformat/demux.c                |   2 +
- modules/demux/mp4/essetup.c                   |   1 +
- modules/demux/mp4/libmp4.c                    |   3 +
- modules/demux/mp4/libmp4.h                    |   1 +
- modules/gui/qt/menus/menus.cpp                | 116 ++++++
- .../misc/preparser_serializer/json/fromjson.c |   7 +
- .../misc/preparser_serializer/json/tojson.c   |   4 +-
- src/libvlc-module.c                           | 104 ++++++
- src/video_output/video_output.c               |  13 +
- 17 files changed, 820 insertions(+), 69 deletions(-)
- create mode 100644 dolbyvision/verify_dovi_sources.py
- create mode 100644 include/vlc_dovi.h
-
 diff --git a/.github/workflows/windows-dolbyvision.yml b/.github/workflows/windows-dolbyvision.yml
-index dc47ffd..d90eabf 100644
+index dc47ffdc236d048a529e03af46c92769096bfc6a..d90eabf1256c1a29e39a592c48452856675b2241 100644
 --- a/.github/workflows/windows-dolbyvision.yml
 +++ b/.github/workflows/windows-dolbyvision.yml
 @@ -4,11 +4,21 @@ on:
@@ -69,7 +42,7 @@ index dc47ffd..d90eabf 100644
        - name: Build VLC Windows x64 in official VideoLAN CI image
          shell: bash
 diff --git a/dolbyvision/README.md b/dolbyvision/README.md
-index bc66d5f..eb6c2b4 100644
+index bc66d5fca197f517e95a7f7518e4f2146b3c89b6..eb6c2b4f77baa4084c78607613fdd74c0961165f 100644
 --- a/dolbyvision/README.md
 +++ b/dolbyvision/README.md
 @@ -34,14 +34,34 @@ Success criteria:
@@ -118,7 +91,7 @@ index bc66d5f..eb6c2b4 100644
 +display is in native Dolby Vision mode.
 diff --git a/dolbyvision/verify_dovi_sources.py b/dolbyvision/verify_dovi_sources.py
 new file mode 100644
-index 0000000..d78cded
+index 0000000000000000000000000000000000000000..d78cded67599cb31c3d7c97a604186a3aa176fdc
 --- /dev/null
 +++ b/dolbyvision/verify_dovi_sources.py
 @@ -0,0 +1,64 @@
@@ -187,7 +160,7 @@ index 0000000..d78cded
 +if __name__ == "__main__":
 +    main()
 diff --git a/include/meson.build b/include/meson.build
-index 9e9d4d5..dbaddf9 100644
+index 9e9d4d5165bc984feecc74baa49a3e6c8164a431..dbaddf90a5adb1bcb0db1239d68f1289e6edb534 100644
 --- a/include/meson.build
 +++ b/include/meson.build
 @@ -44,6 +44,7 @@ install_headers(
@@ -200,7 +173,7 @@ index 9e9d4d5..dbaddf9 100644
      'vlc_es_out.h',
 diff --git a/include/vlc_dovi.h b/include/vlc_dovi.h
 new file mode 100644
-index 0000000..7dc5d5b
+index 0000000000000000000000000000000000000000..7dc5d5bb3a7e7fc94b054a2cd109ac4e206383df
 --- /dev/null
 +++ b/include/vlc_dovi.h
 @@ -0,0 +1,116 @@
@@ -321,7 +294,7 @@ index 0000000..7dc5d5b
 +
 +#endif /* VLC_DOVI_H */
 diff --git a/include/vlc_es.h b/include/vlc_es.h
-index ef80ce8..c3ddbb3 100644
+index ef80ce8001dc97e9473c23b74d8ecaf91f08cb62..c3ddbb385336302d686613a952beeafbf1c8d3b8 100644
 --- a/include/vlc_es.h
 +++ b/include/vlc_es.h
 @@ -382,6 +382,7 @@ struct video_format_t
@@ -333,7 +306,7 @@ index ef80ce8..c3ddbb3 100644
      uint32_t i_cubemap_padding; /**< padding in pixels of the cube map faces */
  };
 diff --git a/modules/codec/avcodec/video.c b/modules/codec/avcodec/video.c
-index 53f3bd0..1df5ba7 100644
+index 53f3bd0d12fa513ee415d5cc5945976ee7ff0b5a..1df5ba7eb186c2632e03c62bcf34b01416e4a0c2 100644
 --- a/modules/codec/avcodec/video.c
 +++ b/modules/codec/avcodec/video.c
 @@ -35,6 +35,7 @@
@@ -461,7 +434,7 @@ index 53f3bd0..1df5ba7 100644
      p_sys->pix_fmt = swfmt;
      return swfmt;
 diff --git a/modules/codec/mft.cpp b/modules/codec/mft.cpp
-index 28dbe98..72e3a6b 100644
+index 28dbe98a65f0c653e9e9b0879018d9b15056a2e0..72e3a6b22ee5a2af845d6855131dafa8c82bc8e9 100644
 --- a/modules/codec/mft.cpp
 +++ b/modules/codec/mft.cpp
 @@ -38,6 +38,7 @@
@@ -942,7 +915,7 @@ index 28dbe98..72e3a6b 100644
          return VLC_EINVAL;
  
 diff --git a/modules/demux/avformat/demux.c b/modules/demux/avformat/demux.c
-index 0a4cfbd..e9924d2 100644
+index 0a4cfbdca3478d2a4ec3b14409c1f4a9ac962669..e9924d25f639e4090191fa643c4c65512cf1e219 100644
 --- a/modules/demux/avformat/demux.c
 +++ b/modules/demux/avformat/demux.c
 @@ -206,6 +206,8 @@ static void get_dovi_config(es_format_t *fmt, const AVStream *s)
@@ -955,7 +928,7 @@ index 0a4cfbd..e9924d2 100644
  }
  
 diff --git a/modules/demux/mp4/essetup.c b/modules/demux/mp4/essetup.c
-index 02aa0e9..6c41379 100644
+index 02aa0e906736b8cc214203c4056c2bb88f4c2844..6c41379b7bb4303848430f36dfd265eaa68ec1d0 100644
 --- a/modules/demux/mp4/essetup.c
 +++ b/modules/demux/mp4/essetup.c
 @@ -529,6 +529,7 @@ int SetupVideoES( demux_t *p_demux, const mp4_track_t *p_track, const MP4_Box_t
@@ -967,7 +940,7 @@ index 02aa0e9..6c41379 100644
  
      SetupGlobalExtensions( p_sample, p_fmt );
 diff --git a/modules/demux/mp4/libmp4.c b/modules/demux/mp4/libmp4.c
-index 487bd39..365abdb 100644
+index 487bd39e485d9157e030983f461a9282f49aa091..365abdbd4f64e676002d29810e8b1f9152e63e9a 100644
 --- a/modules/demux/mp4/libmp4.c
 +++ b/modules/demux/mp4/libmp4.c
 @@ -4149,6 +4149,7 @@ static int MP4_ReadBox_dvcC( stream_t *p_stream, MP4_Box_t *p_box )
@@ -988,7 +961,7 @@ index 487bd39..365abdb 100644
      MP4_READBOX_EXIT( 1 );
  }
 diff --git a/modules/demux/mp4/libmp4.h b/modules/demux/mp4/libmp4.h
-index 0b9c768..d227dd8 100644
+index 0b9c7682038d2339c268ae05322697bfcc7d0199..d227dd89f620e02fcb3ce56fa7b2ed86d76735eb 100644
 --- a/modules/demux/mp4/libmp4.h
 +++ b/modules/demux/mp4/libmp4.h
 @@ -740,6 +740,7 @@ typedef struct
@@ -1000,7 +973,7 @@ index 0b9c768..d227dd8 100644
  
  #define SAMPLE_DESC_COMMON_HEADER \
 diff --git a/modules/gui/qt/menus/menus.cpp b/modules/gui/qt/menus/menus.cpp
-index a86e13b..a1c40e2 100644
+index a86e13b3cb943eef93b3a296fc9edb531acaf4de..6a98b6fd32ef6db0d14a82b3c4a853c2c7eabbab 100644
 --- a/modules/gui/qt/menus/menus.cpp
 +++ b/modules/gui/qt/menus/menus.cpp
 @@ -34,6 +34,8 @@
@@ -1012,7 +985,7 @@ index a86e13b..a1c40e2 100644
  
  #include "menus.hpp"
  
-@@ -441,6 +443,117 @@ void VLCMenuBar::SubtitleMenu( qt_intf_t *p_intf, QMenu *current, bool b_popup )
+@@ -441,6 +443,118 @@ void VLCMenuBar::SubtitleMenu( qt_intf_t *p_intf, QMenu *current, bool b_popup )
      }
  }
  
@@ -1114,7 +1087,8 @@ index a86e13b..a1c40e2 100644
 +        menu, p_intf, qtr("Force Dolby Vision profile"),
 +        "dovi-force-profile", profiles, ARRAY_SIZE(profiles));
 +    profile_menu->setToolTipsVisible(true);
-+    profile_menu->setStatusTip(qtr("Changes routing metadata; it cannot create a missing RPU or enhancement layer"));
++    profile_menu->menuAction()->setStatusTip(
++        qtr("Changes routing metadata; it cannot create a missing RPU or enhancement layer"));
 +
 +    menu->addSeparator();
 +    AddDolbyVisionToggle(menu, p_intf,
@@ -1130,7 +1104,7 @@ index a86e13b..a1c40e2 100644
  /**
   * Main Video Menu
   * Subtitles are part of Video.
-@@ -475,6 +588,9 @@ void VLCMenuBar::VideoMenu( qt_intf_t *p_intf, QMenu *current )
+@@ -475,6 +589,9 @@ void VLCMenuBar::VideoMenu( qt_intf_t *p_intf, QMenu *current )
          current->addMenu( new CheckableListMenu(qtr( "&Deinterlace" ), THEMIM->getDeinterlace(), QActionGroup::ExclusionPolicy::Exclusive, current) );
          current->addMenu( new CheckableListMenu(qtr( "&Deinterlace mode" ), THEMIM->getDeinterlaceMode(), QActionGroup::ExclusionPolicy::Exclusive, current) );
  
@@ -1141,7 +1115,7 @@ index a86e13b..a1c40e2 100644
          /* Other actions */
          QAction* snapshotAction = new QAction(qtr( "Take &Snapshot" ), current);
 diff --git a/modules/misc/preparser_serializer/json/fromjson.c b/modules/misc/preparser_serializer/json/fromjson.c
-index 69d29eb..923b960 100644
+index 69d29eb10e7ee118f82d217f77da49d6ac8d90b0..923b960c752d3e078c2339fdb66540bb5aafb2d9 100644
 --- a/modules/misc/preparser_serializer/json/fromjson.c
 +++ b/modules/misc/preparser_serializer/json/fromjson.c
 @@ -685,6 +685,13 @@ static void fromJSON_video_format(struct serdes_sys *sys,
@@ -1159,7 +1133,7 @@ index 69d29eb..923b960 100644
  
      json_object_to_uint(obj, "i_cubemap_padding", &video->i_cubemap_padding,
 diff --git a/modules/misc/preparser_serializer/json/tojson.c b/modules/misc/preparser_serializer/json/tojson.c
-index c6fd660..ff0af0c 100644
+index c6fd66057f86771d69eb0133a787ad7aca36b59d..ff0af0c36c66d11e56876e25a8a4f901841804c3 100644
 --- a/modules/misc/preparser_serializer/json/tojson.c
 +++ b/modules/misc/preparser_serializer/json/tojson.c
 @@ -587,7 +587,9 @@ static void toJSON_video_format(struct serdes_sys *sys,
@@ -1174,7 +1148,7 @@ index c6fd660..ff0af0c 100644
          return;
      }
 diff --git a/src/libvlc-module.c b/src/libvlc-module.c
-index 8729a17..3b31ad3 100644
+index 8729a175568e296cd11ee0f347a454c0c9f30acb..3b31ad3ee9c2797210bdf0b36764fcdad56cc389 100644
 --- a/src/libvlc-module.c
 +++ b/src/libvlc-module.c
 @@ -46,6 +46,7 @@
@@ -1303,7 +1277,7 @@ index 8729a17..3b31ad3 100644
                VIDEO_TITLE_SHOW_LONGTEXT )
          change_safe()
 diff --git a/src/video_output/video_output.c b/src/video_output/video_output.c
-index 90a0bcd..096cf8f 100644
+index 90a0bcd617ce827a6137db8714249264cfe30e90..096cf8fe1ccb5d8adcc91239e5eeb2ba26506b4d 100644
 --- a/src/video_output/video_output.c
 +++ b/src/video_output/video_output.c
 @@ -50,6 +50,7 @@
