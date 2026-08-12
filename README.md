@@ -1,6 +1,6 @@
 # VLC Dolby Vision for Windows
 
-Windows x64 VLC build pipeline with Dolby Vision stream detection, profile-aware decoder routing, Media Foundation/P010 handling, FFmpeg fallback, and an Energy Media Player-inspired settings menu.
+Windows x64 VLC installer pipeline with Dolby Vision stream detection, profile-aware decoder routing, Media Foundation/P010 handling, FFmpeg fallback, and an Energy Media Player-inspired settings menu.
 
 ## Included controls
 
@@ -20,5 +20,9 @@ Before an artifact is uploaded, CI downloads Jellyfin's Creative Commons
 `dvh1`/RPU signalling, then plays it with the newly built Windows VLC under
 Wine. The artifact is accepted only when VLC logs the exact Profile 5 popup
 submission. Both validation logs are included with the Windows packages.
+
+The downloadable artifact contains only the Windows `.exe` installer and the
+two small validation logs. Portable 7z/ZIP copies, MSI, extracted trees, and
+the large debug archive are intentionally not generated or uploaded.
 
 > The VLC popup reports that Dolby Vision metadata was detected. A television or laptop panel's native Dolby Vision indicator still depends on the licensed Windows decoder, GPU driver, certified display, and active output path.
