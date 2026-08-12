@@ -15,4 +15,10 @@ Windows x64 VLC build pipeline with Dolby Vision stream detection, profile-aware
 
 The GitHub Actions workflow checks out the VLC source baseline, applies the versioned patch, verifies all Dolby Vision integration points, and builds a Windows x64 artifact in the official VideoLAN CI image.
 
+Before an artifact is uploaded, CI downloads Jellyfin's Creative Commons
+1080p Dolby Vision Profile 5 test clip, verifies its published SHA-256 and
+`dvh1`/RPU signalling, then plays it with the newly built Windows VLC under
+Wine. The artifact is accepted only when VLC logs the exact Profile 5 popup
+submission. Both validation logs are included with the Windows packages.
+
 > The VLC popup reports that Dolby Vision metadata was detected. A television or laptop panel's native Dolby Vision indicator still depends on the licensed Windows decoder, GPU driver, certified display, and active output path.

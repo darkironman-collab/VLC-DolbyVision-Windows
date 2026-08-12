@@ -43,6 +43,26 @@ jobs:
           git diff --check
           git status --short
 
+      - name: Validate a real Dolby Vision Profile 5 sample
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SAMPLE_DIR="$GITHUB_WORKSPACE/test-media"
+          SAMPLE="$SAMPLE_DIR/Test Jellyfin 1080p DV P5.mp4"
+          mkdir -p "$SAMPLE_DIR"
+          curl --fail --location --retry 3 \
+            --output "$SAMPLE" \
+            "https://repo.jellyfin.org/test-videos/HDR/Dolby%20Vision/Test%20Jellyfin%201080p%20DV%20P5.mp4"
+          curl --fail --location --retry 3 \
+            --output "$SAMPLE.sha256sum" \
+            "https://repo.jellyfin.org/test-videos/HDR/Dolby%20Vision/Test%20Jellyfin%201080p%20DV%20P5.mp4.sha256sum"
+          (
+            cd "$SAMPLE_DIR"
+            sha256sum --check "Test Jellyfin 1080p DV P5.mp4.sha256sum"
+          )
+          python3 "$GITHUB_WORKSPACE/vlc/dolbyvision/verify_dovi_sample.py" "$SAMPLE" \
+            | tee "$SAMPLE_DIR/dolby-vision-sample-validation.txt"
+
       - name: Build VLC Windows x64 in official VideoLAN CI image
         shell: bash
         run: |
@@ -67,8 +87,42 @@ jobs:
               extras/package/win32/build.sh -a x86_64 -p -i n
             '
 
+      - name: Smoke-test Dolby Vision popup with the built VLC
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends wine64
+
+          VLC_EXE="$(find "$GITHUB_WORKSPACE/vlc/win64" -type f \
+            -path "*/vlc-win64/vlc.exe" -print -quit)"
+          test -n "$VLC_EXE"
+          SAMPLE="$GITHUB_WORKSPACE/test-media/Test Jellyfin 1080p DV P5.mp4"
+          SAMPLE_WINDOWS="Z:${SAMPLE//\//\\}"
+          LOG="$GITHUB_WORKSPACE/test-media/dolby-vision-popup-smoke.log"
+          WINE_BIN="$(command -v wine64 || command -v wine || true)"
+          if [ -z "$WINE_BIN" ] && [ -x /usr/lib/wine/wine64 ]; then
+            WINE_BIN=/usr/lib/wine/wine64
+          fi
+          test -n "$WINE_BIN"
+
+          cd "$(dirname "$VLC_EXE")"
+          export WINEDEBUG=-all
+          timeout 60s "$WINE_BIN" "$(basename "$VLC_EXE")" \
+            --ignore-config \
+            --intf dummy \
+            --vout dummy \
+            --aout dummy \
+            --avcodec-hw none \
+            --dovi-decode-mode 4 \
+            --dovi-osd \
+            --play-and-exit \
+            --verbose 2 \
+            "$SAMPLE_WINDOWS" 2>&1 | tee "$LOG"
+
+          grep -F "Dolby Vision popup displayed: Dolby Vision Profile 5 detected" "$LOG"
+
       - name: Collect Windows packages
-        if: always()
         shell: bash
         run: |
           set -u
@@ -81,10 +135,13 @@ jobs:
               "$GITHUB_WORKSPACE/artifacts/vlc-dolbyvision-win64-tree.tar.gz" \
               vlc-win64
           fi
+          cp -v "$GITHUB_WORKSPACE/test-media/dolby-vision-sample-validation.txt" \
+            "$GITHUB_WORKSPACE/artifacts/" || true
+          cp -v "$GITHUB_WORKSPACE/test-media/dolby-vision-popup-smoke.log" \
+            "$GITHUB_WORKSPACE/artifacts/" || true
           ls -lah "$GITHUB_WORKSPACE/artifacts" || true
 
       - name: Upload Windows x64 artifact
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: VLC-DolbyVision-Windows-x64

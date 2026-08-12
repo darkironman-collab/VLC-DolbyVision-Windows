@@ -42,10 +42,10 @@ index dc47ffdc236d048a529e03af46c92769096bfc6a..d90eabf1256c1a29e39a592c48452856
        - name: Build VLC Windows x64 in official VideoLAN CI image
          shell: bash
 diff --git a/dolbyvision/README.md b/dolbyvision/README.md
-index bc66d5fca197f517e95a7f7518e4f2146b3c89b6..eb6c2b4f77baa4084c78607613fdd74c0961165f 100644
+index bc66d5fca197f517e95a7f7518e4f2146b3c89b6..0e9623c123d9fdf8c8f3f352964df48e860133f0 100644
 --- a/dolbyvision/README.md
 +++ b/dolbyvision/README.md
-@@ -34,14 +34,34 @@ Success criteria:
+@@ -34,14 +34,39 @@ Success criteria:
  4. Determine whether the Windows display enters native Dolby Vision mode.
  5. If native DV output is unavailable, provide a correct HDR10/libplacebo fallback rather than purple/green output.
  
@@ -72,6 +72,11 @@ index bc66d5fca197f517e95a7f7518e4f2146b3c89b6..eb6c2b4f77baa4084c78607613fdd74c
 +- HDR10/HLG-compatible base-layer fallback
 +- Four-second in-player Dolby Vision/profile popup
 +
++The popup is now emitted both for container-signalled Dolby Vision and for
++RPU metadata first discovered after decoding starts. The decoder notifies the
++video output on that late transition, and the runtime log records
++`Dolby Vision popup displayed` when the four-second OSD is submitted.
++
 +Changing a routing option restarts the active video decoder, so it can be
 +tested while a video is open.
 +
@@ -89,12 +94,90 @@ index bc66d5fca197f517e95a7f7518e4f2146b3c89b6..eb6c2b4f77baa4084c78607613fdd74c
 +decoder, and the display must all enter a certified Dolby Vision output path.
 +The VLC popup deliberately says `detected`; it does not falsely claim that the
 +display is in native Dolby Vision mode.
+diff --git a/dolbyvision/verify_dovi_sample.py b/dolbyvision/verify_dovi_sample.py
+new file mode 100755
+index 0000000000000000000000000000000000000000..99a9bb9f8c19c036f04056297b82fab62b99e58c
+--- /dev/null
++++ b/dolbyvision/verify_dovi_sample.py
+@@ -0,0 +1,72 @@
++#!/usr/bin/env python3
++"""Verify that a real media sample carries usable Dolby Vision signalling."""
++
++import argparse
++import json
++import subprocess
++from pathlib import Path
++
++
++DOVI_TAGS = {"dvav", "dva1", "dvhe", "dvh1"}
++
++
++def probe(sample: Path) -> dict:
++    command = [
++        "ffprobe",
++        "-v",
++        "error",
++        "-select_streams",
++        "v:0",
++        "-show_entries",
++        "stream=codec_name,codec_tag_string,profile,pix_fmt:stream_side_data",
++        "-of",
++        "json",
++        str(sample),
++    ]
++    try:
++        output = subprocess.check_output(command, text=True)
++    except FileNotFoundError as exc:
++        raise SystemExit("ffprobe is required to validate the Dolby Vision sample") from exc
++    return json.loads(output)
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("sample", type=Path)
++    args = parser.parse_args()
++
++    if not args.sample.is_file():
++        raise SystemExit(f"Sample not found: {args.sample}")
++
++    result = probe(args.sample)
++    streams = result.get("streams", [])
++    if len(streams) != 1:
++        raise SystemExit("Expected exactly one selected video stream")
++
++    stream = streams[0]
++    tag = stream.get("codec_tag_string", "").lower()
++    if stream.get("codec_name") != "hevc" or tag not in DOVI_TAGS:
++        raise SystemExit(f"Not a signalled Dolby Vision HEVC stream: tag={tag!r}")
++
++    records = [
++        item for item in stream.get("side_data_list", [])
++        if item.get("side_data_type") == "DOVI configuration record"
++    ]
++    if len(records) != 1:
++        raise SystemExit("Missing Dolby Vision configuration record")
++
++    dovi = records[0]
++    profile = int(dovi.get("dv_profile", 0))
++    if int(dovi.get("dv_version_major", 0)) < 1:
++        raise SystemExit("Invalid Dolby Vision configuration version")
++    if profile <= 0 or int(dovi.get("rpu_present_flag", 0)) != 1:
++        raise SystemExit("Dolby Vision profile/RPU signalling is incomplete")
++
++    print(
++        f"Verified real Dolby Vision sample: Profile {profile}, "
++        f"tag {tag}, RPU present, {args.sample.stat().st_size} bytes"
++    )
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/dolbyvision/verify_dovi_sources.py b/dolbyvision/verify_dovi_sources.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..d78cded67599cb31c3d7c97a604186a3aa176fdc
+index 0000000000000000000000000000000000000000..013d66ddeea29e8f8aec3e98e8456845ae001dc3
 --- /dev/null
 +++ b/dolbyvision/verify_dovi_sources.py
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,70 @@
 +#!/usr/bin/env python3
 +"""Fail CI when a required Windows Dolby Vision integration point is absent."""
 +
@@ -115,11 +198,14 @@ index 0000000000000000000000000000000000000000..d78cded67599cb31c3d7c97a604186a3
 +        "SelectDecoderOutputType",
 +        "MFVideoFormat_P010",
 +        "Dolby Vision RPU NAL detected",
++        "decoder_UpdateVideoFormat(p_dec)",
 +        "require_dolby_transform",
 +    ],
 +    "modules/codec/avcodec/video.c": [
 +        "b_dovi_force_software",
 +        "b_dovi_force_hardware",
++        "b_dovi_rpu_seen",
++        "Dolby Vision RPU metadata detected in decoded frame",
 +        "dovi-force-profile",
 +    ],
 +    "modules/gui/qt/menus/menus.cpp": [
@@ -133,7 +219,10 @@ index 0000000000000000000000000000000000000000..d78cded67599cb31c3d7c97a604186a3
 +        'add_bool( "dovi-hdr10-fallback"',
 +    ],
 +    "src/video_output/video_output.c": [
-+        'var_InheritBool(&vout->obj, "dovi-osd")',
++        'var_InheritBool(&sys->obj, "dovi-osd")',
++        "VoutShowDolbyVisionOSD",
++        "Dolby Vision popup displayed",
++        "!was_dovi && is_dovi",
 +        "vlc_dovi_ProfileName",
 +    ],
 +    "modules/demux/mp4/libmp4.c": ["i_bl_compatibility_id"],
@@ -306,7 +395,7 @@ index ef80ce8001dc97e9473c23b74d8ecaf91f08cb62..c3ddbb385336302d686613a952beeafb
      uint32_t i_cubemap_padding; /**< padding in pixels of the cube map faces */
  };
 diff --git a/modules/codec/avcodec/video.c b/modules/codec/avcodec/video.c
-index 53f3bd0d12fa513ee415d5cc5945976ee7ff0b5a..1df5ba7eb186c2632e03c62bcf34b01416e4a0c2 100644
+index 53f3bd0d12fa513ee415d5cc5945976ee7ff0b5a..62abb4e06599ec8adf723332419a59290a56f7e5 100644
 --- a/modules/codec/avcodec/video.c
 +++ b/modules/codec/avcodec/video.c
 @@ -35,6 +35,7 @@
@@ -317,7 +406,7 @@ index 53f3bd0d12fa513ee415d5cc5945976ee7ff0b5a..1df5ba7eb186c2632e03c62bcf34b014
  #include <assert.h>
  
  #include <libavcodec/avcodec.h>
-@@ -91,6 +92,11 @@ typedef struct
+@@ -91,6 +92,12 @@ typedef struct
      bool b_show_corrupted;
      bool b_from_preroll;
      bool b_hardware_only;
@@ -325,11 +414,12 @@ index 53f3bd0d12fa513ee415d5cc5945976ee7ff0b5a..1df5ba7eb186c2632e03c62bcf34b014
 +    bool b_dovi_force_software;
 +    bool b_dovi_force_hardware;
 +    bool b_dovi_force_playback;
++    bool b_dovi_rpu_seen;
 +    int dovi_profile_override;
      /* Some codecs carry their whole state (image canvas and/or palette) forward
       * as deltas and have no recoverable keyframes. Never drop frames for those,
       * regardless of lateness. */
-@@ -420,8 +426,17 @@ static int lavc_UpdateVideoFormat(decoder_t *dec, AVCodecContext *ctx,
+@@ -420,8 +427,17 @@ static int lavc_UpdateVideoFormat(decoder_t *dec, AVCodecContext *ctx,
      dec->fmt_out.video.pose = dec->fmt_in->video.pose;
      if ( dec->fmt_in->video.mastering.max_luminance )
          dec->fmt_out.video.mastering = dec->fmt_in->video.mastering;
@@ -348,7 +438,7 @@ index 53f3bd0d12fa513ee415d5cc5945976ee7ff0b5a..1df5ba7eb186c2632e03c62bcf34b014
      dec->fmt_out.video.lighting = dec->fmt_in->video.lighting;
      p_sys->decoder_width  = dec->fmt_out.video.i_width;
      p_sys->decoder_height = dec->fmt_out.video.i_height;
-@@ -973,6 +988,19 @@ failed:
+@@ -973,6 +989,19 @@ failed:
  int InitVideoDec( vlc_object_t *obj )
  {
      decoder_t *p_dec = (decoder_t *)obj;
@@ -368,7 +458,7 @@ index 53f3bd0d12fa513ee415d5cc5945976ee7ff0b5a..1df5ba7eb186c2632e03c62bcf34b014
      const AVCodec *p_codec;
      AVCodecContext *p_context = ffmpeg_AllocContext( p_dec, &p_codec, false );
      if( p_context == NULL )
-@@ -992,6 +1020,17 @@ int InitVideoDec( vlc_object_t *obj )
+@@ -992,6 +1021,18 @@ int InitVideoDec( vlc_object_t *obj )
      p_sys->profile = -1;
      p_sys->level = -1;
      p_sys->b_hardware_only = false;
@@ -380,22 +470,43 @@ index 53f3bd0d12fa513ee415d5cc5945976ee7ff0b5a..1df5ba7eb186c2632e03c62bcf34b014
 +        dovi_mode == VLC_DOVI_DECODE_FFMPEG_HW;
 +    p_sys->b_dovi_force_playback = is_dovi &&
 +        var_InheritBool(p_dec, "dovi-force-playback");
++    p_sys->b_dovi_rpu_seen = false;
 +    p_sys->dovi_profile_override = is_dovi
 +        ? var_InheritInteger(p_dec, "dovi-force-profile")
 +        : VLC_DOVI_PROFILE_AUTO;
  
      return InitVideoDecCommon( p_dec );
  }
-@@ -1331,7 +1370,7 @@ static int DecodeSidedata( decoder_t *p_dec, const AVFrame *frame, picture_t *p_
+@@ -1331,8 +1372,27 @@ static int DecodeSidedata( decoder_t *p_dec, const AVFrame *frame, picture_t *p_
  
  #if LIBAVUTIL_VERSION_CHECK( 57, 16, 100 )
      const AVFrameSideData *p_dovi = av_frame_get_side_data( frame, AV_FRAME_DATA_DOVI_METADATA );
 -    if( p_dovi )
 +    if( p_dovi && !p_sys->b_dovi_disabled )
      {
++        if( !p_sys->b_dovi_rpu_seen )
++        {
++            p_sys->b_dovi_rpu_seen = true;
++            const bool newly_detected =
++                !vlc_video_format_IsDolbyVision(&p_dec->fmt_out.video);
++            if( p_dec->fmt_out.video.dovi.version_major == 0 )
++                p_dec->fmt_out.video.dovi.version_major = 1;
++            p_dec->fmt_out.video.dovi.rpu_present = 1;
++            vlc_video_format_ApplyDoviProfileOverride(
++                &p_dec->fmt_out.video, p_sys->dovi_profile_override);
++            p_pic->format.dovi = p_dec->fmt_out.video.dovi;
++            if( newly_detected )
++            {
++                msg_Info(p_dec, "Dolby Vision RPU metadata detected in decoded frame");
++                if( decoder_UpdateVideoOutput(p_dec, p_sys->vctx_out) )
++                    return -1;
++            }
++        }
++
          vlc_video_dovi_metadata_t *dst;
          dst = picture_AttachNewAncillary( p_pic, VLC_ANCILLARY_ID_DOVI, sizeof(*dst) );
-@@ -2155,8 +2194,18 @@ no_reuse:
+         if( !dst )
+@@ -2155,8 +2215,18 @@ no_reuse:
      p_sys->profile = p_context->profile;
      p_sys->level = p_context->level;
  
@@ -414,7 +525,7 @@ index 53f3bd0d12fa513ee415d5cc5945976ee7ff0b5a..1df5ba7eb186c2632e03c62bcf34b014
  
      const AVPixFmtDescriptor *src_desc = av_pix_fmt_desc_get(swfmt);
  
-@@ -2186,6 +2235,18 @@ no_reuse:
+@@ -2186,6 +2256,18 @@ no_reuse:
          return hwfmt;
      }
  
@@ -434,7 +545,7 @@ index 53f3bd0d12fa513ee415d5cc5945976ee7ff0b5a..1df5ba7eb186c2632e03c62bcf34b014
      p_sys->pix_fmt = swfmt;
      return swfmt;
 diff --git a/modules/codec/mft.cpp b/modules/codec/mft.cpp
-index 28dbe98a65f0c653e9e9b0879018d9b15056a2e0..72e3a6b22ee5a2af845d6855131dafa8c82bc8e9 100644
+index 28dbe98a65f0c653e9e9b0879018d9b15056a2e0..7170030352fdbb5b41f957b3e82c742f70947f27 100644
 --- a/modules/codec/mft.cpp
 +++ b/modules/codec/mft.cpp
 @@ -38,6 +38,7 @@
@@ -579,7 +690,7 @@ index 28dbe98a65f0c653e9e9b0879018d9b15056a2e0..72e3a6b22ee5a2af845d6855131dafa8
          if (FAILED(hr))
              return VLC_EGENERIC;
  
-@@ -1281,6 +1338,117 @@ static void Flush(decoder_t *p_dec)
+@@ -1281,6 +1338,119 @@ static void Flush(decoder_t *p_dec)
          p_sys->startStream();
  }
  
@@ -660,6 +771,8 @@ index 28dbe98a65f0c653e9e9b0879018d9b15056a2e0..72e3a6b22ee5a2af845d6855131dafa8
 +            &p_dec->fmt_out.video,
 +            var_InheritInteger(p_dec, "dovi-force-profile"));
 +        msg_Info(p_dec, "Dolby Vision RPU NAL detected in HEVC stream (NAL unit type 62)");
++        if (decoder_UpdateVideoFormat(p_dec) != VLC_SUCCESS)
++            msg_Warn(p_dec, "failed to notify the video output about late Dolby Vision detection");
 +    }
 +
 +    if (vidsys->hh.i_input_nal_length_size && !vidsys->b_xps_pushed)
@@ -697,7 +810,7 @@ index 28dbe98a65f0c653e9e9b0879018d9b15056a2e0..72e3a6b22ee5a2af845d6855131dafa8
  static int DecodeSync(decoder_t *p_dec, block_t *p_block)
  {
      auto *p_sys = static_cast<mft_sys_t*>(p_dec->p_sys);
-@@ -1313,33 +1481,15 @@ static int DecodeSync(decoder_t *p_dec, block_t *p_block)
+@@ -1313,33 +1483,15 @@ static int DecodeSync(decoder_t *p_dec, block_t *p_block)
  
      if (p_block != NULL )
      {
@@ -738,7 +851,7 @@ index 28dbe98a65f0c653e9e9b0879018d9b15056a2e0..72e3a6b22ee5a2af845d6855131dafa8
      }
  
      return VLCDEC_SUCCESS;
-@@ -1436,6 +1586,11 @@ static int DecodeAsync(decoder_t *p_dec, block_t *p_block)
+@@ -1436,6 +1588,11 @@ static int DecodeAsync(decoder_t *p_dec, block_t *p_block)
          }
      }
  
@@ -750,7 +863,7 @@ index 28dbe98a65f0c653e9e9b0879018d9b15056a2e0..72e3a6b22ee5a2af845d6855131dafa8
      p_sys->pending_input_events -= 1;
      if (ProcessInputStream(vlc_object_logger(p_dec), p_sys->mft, p_sys->input_stream_id, p_block))
          goto error;
-@@ -1446,7 +1601,8 @@ static int DecodeAsync(decoder_t *p_dec, block_t *p_block)
+@@ -1446,7 +1603,8 @@ static int DecodeAsync(decoder_t *p_dec, block_t *p_block)
  
  error:
      msg_Err(p_dec, "Error in DecodeAsync()");
@@ -760,7 +873,7 @@ index 28dbe98a65f0c653e9e9b0879018d9b15056a2e0..72e3a6b22ee5a2af845d6855131dafa8
      return VLCDEC_SUCCESS;
  }
  
-@@ -1589,11 +1745,7 @@ static int InitializeMFT(decoder_t *p_dec, const MFT_REGISTER_TYPE_INFO & type)
+@@ -1589,11 +1747,7 @@ static int InitializeMFT(decoder_t *p_dec, const MFT_REGISTER_TYPE_INFO & type)
          }
      }
  
@@ -773,7 +886,7 @@ index 28dbe98a65f0c653e9e9b0879018d9b15056a2e0..72e3a6b22ee5a2af845d6855131dafa8
      if (FAILED(hr))
          goto error;
  
-@@ -1621,11 +1773,14 @@ static int InitializeMFT(decoder_t *p_dec, const MFT_REGISTER_TYPE_INFO & type)
+@@ -1621,11 +1775,14 @@ static int InitializeMFT(decoder_t *p_dec, const MFT_REGISTER_TYPE_INFO & type)
          goto error;
      }
  
@@ -789,7 +902,7 @@ index 28dbe98a65f0c653e9e9b0879018d9b15056a2e0..72e3a6b22ee5a2af845d6855131dafa8
      }
      return VLC_SUCCESS;
  
-@@ -1783,26 +1938,68 @@ static int FindMFT(decoder_t *p_dec)
+@@ -1783,26 +1940,68 @@ static int FindMFT(decoder_t *p_dec)
  
      msg_Dbg(p_dec, "Found %d available MFT module(s) for %4.4s", activate_objects_count, (const char*)&p_dec->fmt_in->i_codec);
      if (activate_objects_count == 0)
@@ -870,7 +983,7 @@ index 28dbe98a65f0c653e9e9b0879018d9b15056a2e0..72e3a6b22ee5a2af845d6855131dafa8
  }
  
  HRESULT mft_enc_video::ProcessOutput(vlc_logger *logger, block_t * & output)
-@@ -2589,10 +2786,43 @@ error:
+@@ -2589,10 +2788,43 @@ error:
  }
  #endif // !ENABLE_SOUT
  
@@ -1277,7 +1390,7 @@ index 8729a175568e296cd11ee0f347a454c0c9f30acb..3b31ad3ee9c2797210bdf0b36764fcda
                VIDEO_TITLE_SHOW_LONGTEXT )
          change_safe()
 diff --git a/src/video_output/video_output.c b/src/video_output/video_output.c
-index 90a0bcd617ce827a6137db8714249264cfe30e90..096cf8fe1ccb5d8adcc91239e5eeb2ba26506b4d 100644
+index 90a0bcd617ce827a6137db8714249264cfe30e90..ede435835c5d6e4129d05b3bce8571e87351bdc2 100644
 --- a/src/video_output/video_output.c
 +++ b/src/video_output/video_output.c
 @@ -50,6 +50,7 @@
@@ -1288,22 +1401,54 @@ index 90a0bcd617ce827a6137db8714249264cfe30e90..096cf8fe1ccb5d8adcc91239e5eeb2ba
  #include <vlc_tracer.h>
  #include <vlc_atomic.h>
  
-@@ -1954,6 +1955,18 @@ static int vout_Start(vout_thread_sys_t *vout, vlc_video_context *vctx, const vo
+@@ -1850,6 +1851,24 @@ void vout_ChangeSpuRate(vout_thread_t *vout, size_t channel_id, float rate)
+     spu_SetClockRate(sys->spu, channel_id, rate);
+ }
+ 
++static bool VoutShowDolbyVisionOSD(vout_thread_sys_t *sys,
++                                   const video_format_t *format)
++{
++    if (!var_InheritBool(&sys->obj, "dovi-decoding") ||
++        !var_InheritBool(&sys->obj, "dovi-osd") ||
++        !vlc_video_format_IsDolbyVision(format))
++        return false;
++
++    char status[96];
++    snprintf(status, sizeof(status), "%s detected",
++             vlc_dovi_ProfileName(format));
++    vout_OSDText(&sys->obj, VOUT_SPU_CHANNEL_OSD,
++                 SUBPICTURE_ALIGN_TOP | SUBPICTURE_ALIGN_RIGHT,
++                 VLC_TICK_FROM_SEC(4), status);
++    msg_Info(&sys->obj, "Dolby Vision popup displayed: %s", status);
++    return true;
++}
++
+ static int vout_Start(vout_thread_sys_t *vout, vlc_video_context *vctx, const vout_configuration_t *cfg)
+ {
+     vout_thread_sys_t *sys = vout;
+@@ -1954,6 +1973,8 @@ static int vout_Start(vout_thread_sys_t *vout, vlc_video_context *vctx, const vo
      sys->spu_blend               = NULL;
  
      video_format_Print(VLC_OBJECT(&vout->obj), "original format", &sys->original);
 +
-+    if (var_InheritBool(&vout->obj, "dovi-decoding") &&
-+        var_InheritBool(&vout->obj, "dovi-osd") &&
-+        vlc_video_format_IsDolbyVision(&sys->original))
-+    {
-+        char status[96];
-+        snprintf(status, sizeof(status), "%s detected",
-+                 vlc_dovi_ProfileName(&sys->original));
-+        vout_OSDText(&vout->obj, VOUT_SPU_CHANNEL_OSD,
-+                     SUBPICTURE_ALIGN_TOP | SUBPICTURE_ALIGN_RIGHT,
-+                     VLC_TICK_FROM_SEC(4), status);
-+    }
++    VoutShowDolbyVisionOSD(sys, &sys->original);
      return VLC_SUCCESS;
  error:
      if (sys->filter.chain_interactive != NULL)
+@@ -2334,6 +2355,16 @@ int vout_ChangeSource( vout_thread_t *vout, const video_format_t *original,
+         return -1;
+     }
+ 
++    /* Container signalling is available before the vout starts, but RPU-only
++     * streams can be identified by the decoder after the first input block.
++     * Dolby Vision fields do not make video_format_IsSimilar() return false,
++     * so explicitly forward a late transition and display the OSD once. */
++    const bool was_dovi = vlc_video_format_IsDolbyVision(&sys->original);
++    const bool is_dovi = vlc_video_format_IsDolbyVision(original);
++    sys->original.dovi = original->dovi;
++    if (!was_dovi && is_dovi)
++        VoutShowDolbyVisionOSD(sys, &sys->original);
++
+     /* It is assumed that the SPU input matches input already. */
+     return 0;
+ }
