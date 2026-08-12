@@ -86,7 +86,8 @@ jobs:
               if ! extras/ci/check-url.sh "$VLC_PREBUILT_CONTRIBS_URL"; then
                 unset VLC_PREBUILT_CONTRIBS_URL
               fi
-              extras/package/win32/build.sh -a x86_64 -p -i n
+              extras/package/win32/build.sh -a x86_64 -p -r
+              make -C win64 package-win32-exe
             '
 
       - name: Smoke-test Dolby Vision popup with the built VLC
@@ -97,7 +98,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends wine64
 
           VLC_EXE="$(find "$GITHUB_WORKSPACE/vlc/win64" -type f \
-            -path "*/vlc-win64/vlc.exe" -print -quit)"
+            -path "*/vlc-*/vlc.exe" -print -quit)"
           test -n "$VLC_EXE"
           SAMPLE="$GITHUB_WORKSPACE/test-media/Test Jellyfin 1080p DV P5.mp4"
           SAMPLE_WINDOWS="Z:${SAMPLE//\//\\}"
@@ -127,21 +128,17 @@ jobs:
       - name: Collect Windows packages
         shell: bash
         run: |
-          set -u
+          set -euxo pipefail
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
-          find "$GITHUB_WORKSPACE/vlc/win64" -maxdepth 1 -type f \
-            \( -name "*.exe" -o -name "*.msi" -o -name "*.7z" -o -name "*.zip" \) \
-            -print -exec cp -v {} "$GITHUB_WORKSPACE/artifacts/" \; || true
-          if [ -d "$GITHUB_WORKSPACE/vlc/win64/vlc-win64" ]; then
-            tar -C "$GITHUB_WORKSPACE/vlc/win64" -czf \
-              "$GITHUB_WORKSPACE/artifacts/vlc-dolbyvision-win64-tree.tar.gz" \
-              vlc-win64
-          fi
+          INSTALLER="$(find "$GITHUB_WORKSPACE/vlc/win64" -maxdepth 1 \
+            -type f -name "*.exe" -print -quit)"
+          test -n "$INSTALLER"
+          cp -v "$INSTALLER" "$GITHUB_WORKSPACE/artifacts/"
           cp -v "$GITHUB_WORKSPACE/test-media/dolby-vision-sample-validation.txt" \
-            "$GITHUB_WORKSPACE/artifacts/" || true
+            "$GITHUB_WORKSPACE/artifacts/"
           cp -v "$GITHUB_WORKSPACE/test-media/dolby-vision-popup-smoke.log" \
-            "$GITHUB_WORKSPACE/artifacts/" || true
-          ls -lah "$GITHUB_WORKSPACE/artifacts" || true
+            "$GITHUB_WORKSPACE/artifacts/"
+          ls -lah "$GITHUB_WORKSPACE/artifacts"
 
       - name: Upload Windows x64 artifact
         uses: actions/upload-artifact@v4
