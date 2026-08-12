@@ -47,6 +47,8 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
           SAMPLE_DIR="$GITHUB_WORKSPACE/test-media"
           SAMPLE="$SAMPLE_DIR/Test Jellyfin 1080p DV P5.mp4"
           mkdir -p "$SAMPLE_DIR"
